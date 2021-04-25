@@ -35,10 +35,14 @@
 #import "FFKeyboard.h"
 #import "USBNotifier.h"
 
+#import "FFDefs.h"
+
 static NSMutableArray *hidEventQueue;
 CFMachPortRef eventTap;
 
 static bool hasTopre = false;
+static NSString *topreProductName = nil;
+
 // This callback will be invoked every time there is a keystroke.
 //
 CGEventRef
@@ -58,51 +62,36 @@ myCGEventCallback(CGEventTapProxy proxy, CGEventType type,
     FFHIDEvent *lastHIDEvent = [hidEventQueue lastObject];
     bool mayToPre = [lastHIDEvent.keyboard.device.productName hasPrefix:@"REALFORCE"] || (hasTopre && !lastHIDEvent);
     
-    if (mayToPre && e.type == NSEventTypeSystemDefined && e.subtype == NSEventSubtypeScreenChanged) {
-        // brightness down pressed: data1=30a00
-        // brightness down repeat: data1=30a01
-        // brightness down released: data1=30b00
-        // brightness up pressed: data1=20a00
-        // brightness up repeat: data1=20a01
-        // brightness up released: data1=20b00
+    if (topreProductName && mayToPre) {
+        static int specialKeyCodes[] = { 3, 2, 18, 16, 17, 7, 1, 0, -1};
+        static int fnKeyCodes[] = { KG_KEY_F1, KG_KEY_F2, KG_KEY_F7, KG_KEY_F8, KG_KEY_F9, KG_KEY_F10, KG_KEY_F11, KG_KEY_F12, -1};
+        static NSString* hidIDs[] = { FF_F1_KEYID, FF_F2_KEYID, FF_F7_KEYID, FF_F8_KEYID, FF_F9_KEYID, FF_F10_KEYID, FF_F11_KEYID, FF_F12_KEYID};
 
-        int keyCode = 0, keyState;
-        bool autoRepeat = false;
-        switch (e.data1) {
-            case 0x30a01:         // F1 Auto Repeat
-                autoRepeat = true;
-                // fall through
-            case 0x30a00:   // brightness down pressed
-                keyCode = 122;    // F1
-                keyState = true;  // true => keyDown
-                break;
-            case 0x30b00:
-                keyCode = 122;     // F1
-                keyState = false;  // false => keyUp
-                break;
-
-            case 0x20a01:         // F2 Auto Repeat
-                autoRepeat = true;
-                // fall through
-            case 0x20a00:
-                keyCode = 120;    // F2
-                keyState = true;  // true => keyDown
-                break;
-            case 0x20b00:
-                keyCode = 120;     // F2
-                keyState = false;  // false => keyUp
-                break;
-            default:
-                break;
+        if (e.type == NSEventTypeSystemDefined && e.subtype == NSEventSubtypeScreenChanged) {
+            // special key to fn key
+            int keyCode, keyFlags, keyState, keyRepeat;
+            keyCode = (([e data1] & 0xFFFF0000) >> 16) & 0xFFFF;
+            keyFlags = ([e data1] & 0x0000FFFF);
+            keyState = (((keyFlags & 0xFF00) >> 8)) == 0xA; // true => keyDown
+            keyRepeat = (keyFlags & 0x1);
+            
+            for (int i = 0; specialKeyCodes[i] >= 0; ++i) {
+                if (specialKeyCodes[i] == keyCode) {
+                    //NSLog(@"%@", [NSString stringWithFormat:@"flipped.%@.%@", topreProductName, hidIDs[i]]);
+                    if([[[FFPreferenceManager sharedInstance] valueForKey:[NSString stringWithFormat:@"flipped.%@.%@", topreProductName, hidIDs[i]]] boolValue]) {
+                        //NSLog(@"keyCode=%d -> %d, keyFlags=%04x, keyRepeat=%d", keyCode, fnKeyCodes[i], keyState, keyRepeat);
+                        CGEventSourceRef sourceRef = CGEventCreateSourceFromEvent(ev);
+                        CGEventRef newEvent = CGEventCreateKeyboardEvent(sourceRef, fnKeyCodes[i], keyState);
+                        if (keyRepeat)
+                            CGEventSetIntegerValueField(newEvent, kCGKeyboardEventAutorepeat, 1);
+                        CFRelease(sourceRef);
+                        return newEvent;
+                    }
+                    break;;
+                }
+            }
         }
-        if( keyCode != 0 ) {
-            CGEventSourceRef sourceRef = CGEventCreateSourceFromEvent(ev);
-            CGEventRef newEvent = CGEventCreateKeyboardEvent(sourceRef, keyCode, keyState);
-            if (autoRepeat)
-                CGEventSetIntegerValueField(newEvent, kCGKeyboardEventAutorepeat, 1);
-            CFRelease(sourceRef);
-            return newEvent;
-        }
+        return ev;
     }
 
 	// Paranoid sanity check.
@@ -110,8 +99,8 @@ myCGEventCallback(CGEventTapProxy proxy, CGEventType type,
 		return ev;
 	if([hidEventQueue count] == 0)
 		return ev;
-	
-	/*
+
+    /*
 	some keys are "special", but don't come down the pipe as special events. so we grab them here,
 	and set a flag for the future
 	*/
@@ -268,6 +257,15 @@ extern CFStringRef kAXTrustedCheckOptionPrompt __attribute__((weak_import));
 	// Preference pane sends this notification to tell us to die
 	[[NSDistributedNotificationCenter defaultCenter] addObserver:self selector:@selector(terminate) name:FF_TERMINATE_NOTIFICATION object:nil];
 	
+    
+    for(DDHidKeyboard *keyboard in [DDHidKeyboard allKeyboards]) {
+        // it's a comma-separated string of hex values: <first fkey code>,<first special code>,<second fkey code>,etc...
+        CFStringRef fnusagemap = IORegistryEntrySearchCFProperty([keyboard ioDevice], kIOServicePlane, (CFStringRef)@"FnFunctionUsageMap", kCFAllocatorDefault, kIORegistryIterateRecursively);
+        if(fnusagemap) { // if we've got a non-special keyboard, this won't be set
+            NSLog(@"fnusagemap=%@", (__bridge NSString*)fnusagemap);
+        }
+    }
+
 	[self listenForHIDEvents];
 	[self listenForKeyEvents];
 
@@ -287,7 +285,11 @@ extern CFStringRef kAXTrustedCheckOptionPrompt __attribute__((weak_import));
 	DDHidQueue *queue;
     hasTopre = false;
 	for(DDHidKeyboard *keyboard in [DDHidKeyboard allKeyboards]) {
-        hasTopre |= [keyboard.productName hasPrefix:@"REALFORCE"];
+        if ([keyboard.productName hasPrefix:@"REALFORCE"]) {
+            //if (hasTopre) continue;
+            hasTopre = true;
+            topreProductName = keyboard.productName;
+        }
 		[self.devices addObject:keyboard];
 		[keyboard open];
 		queue = [keyboard createQueueWithSize:10];

@@ -53,6 +53,15 @@ static NSMutableDictionary *keyboards;
 		// extract the FN key map
 		// it's a comma-separated string of hex values: <first fkey code>,<first special code>,<second fkey code>,etc...
 		CFStringRef fnusagemap = IORegistryEntrySearchCFProperty([self.device ioDevice], kIOServicePlane, (CFStringRef)@"FnFunctionUsageMap", kCFAllocatorDefault, kIORegistryIterateRecursively);
+        if (!fnusagemap || CFStringGetLength(fnusagemap)==0) {
+            if ([aDevice.productName hasPrefix:@"REALFORCE"]) {
+                fnusagemap = CFSTR("0x0007003a,0xff010021,0x0007003b,0xff010020,"
+                                   //"0x0007003c,0xff010010,0x0007003d,0xff010002,"
+                                   "0x00070040,0x000C00B4,0x00070041,0x000C00CD,"
+                                   "0x00070042,0x000C00B3,0x00070043,0x000C00E2,"
+                                   "0x00070044,0x000C00EA,0x00070045,0x000C00E9");
+            }
+        }
 		if(fnusagemap) { // if we've got a non-special keyboard, this won't be set
 			NSArray *codes = [(__bridge NSString *)fnusagemap componentsSeparatedByString:@","];
 			NSMutableArray *fkeyCodes = [NSMutableArray array];

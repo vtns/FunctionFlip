@@ -38,6 +38,7 @@
 static NSMutableArray *hidEventQueue;
 CFMachPortRef eventTap;
 
+static bool hasTopre = false;
 // This callback will be invoked every time there is a keystroke.
 //
 CGEventRef
@@ -53,7 +54,57 @@ myCGEventCallback(CGEventTapProxy proxy, CGEventType type,
 	}
 
     NSEvent *e = [NSEvent eventWithCGEvent:ev];
-        
+    
+    FFHIDEvent *lastHIDEvent = [hidEventQueue lastObject];
+    bool mayToPre = [lastHIDEvent.keyboard.device.productName hasPrefix:@"REALFORCE"] || (hasTopre && !lastHIDEvent);
+    
+    if (mayToPre && e.type == NSEventTypeSystemDefined && e.subtype == NSEventSubtypeScreenChanged) {
+        // brightness down pressed: data1=30a00
+        // brightness down repeat: data1=30a01
+        // brightness down released: data1=30b00
+        // brightness up pressed: data1=20a00
+        // brightness up repeat: data1=20a01
+        // brightness up released: data1=20b00
+
+        int keyCode = 0, keyState;
+        bool autoRepeat = false;
+        switch (e.data1) {
+            case 0x30a01:         // F1 Auto Repeat
+                autoRepeat = true;
+                // fall through
+            case 0x30a00:   // brightness down pressed
+                keyCode = 122;    // F1
+                keyState = true;  // true => keyDown
+                break;
+            case 0x30b00:
+                keyCode = 122;     // F1
+                keyState = false;  // false => keyUp
+                break;
+
+            case 0x20a01:         // F2 Auto Repeat
+                autoRepeat = true;
+                // fall through
+            case 0x20a00:
+                keyCode = 120;    // F2
+                keyState = true;  // true => keyDown
+                break;
+            case 0x20b00:
+                keyCode = 120;     // F2
+                keyState = false;  // false => keyUp
+                break;
+            default:
+                break;
+        }
+        if( keyCode != 0 ) {
+            CGEventSourceRef sourceRef = CGEventCreateSourceFromEvent(ev);
+            CGEventRef newEvent = CGEventCreateKeyboardEvent(sourceRef, keyCode, keyState);
+            if (autoRepeat)
+                CGEventSetIntegerValueField(newEvent, kCGKeyboardEventAutorepeat, 1);
+            CFRelease(sourceRef);
+            return newEvent;
+        }
+    }
+
 	// Paranoid sanity check.
 	if ((type != kCGEventKeyDown) && (type != kCGEventKeyUp) && (type != NX_SYSDEFINED))
 		return ev;
@@ -234,8 +285,9 @@ extern CFStringRef kAXTrustedCheckOptionPrompt __attribute__((weak_import));
 	self.queues = [NSMutableArray arrayWithCapacity:1];
 	
 	DDHidQueue *queue;
+    hasTopre = false;
 	for(DDHidKeyboard *keyboard in [DDHidKeyboard allKeyboards]) {
-//        NSLog(@"found keyboard %@", keyboard);
+        hasTopre |= [keyboard.productName hasPrefix:@"REALFORCE"];
 		[self.devices addObject:keyboard];
 		[keyboard open];
 		queue = [keyboard createQueueWithSize:10];

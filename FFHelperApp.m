@@ -62,11 +62,11 @@ myCGEventCallback(CGEventTapProxy proxy, CGEventType type,
     FFHIDEvent *lastHIDEvent = [hidEventQueue lastObject];
     bool mayToPre = [lastHIDEvent.keyboard.device.productName hasPrefix:@"REALFORCE"] || (hasTopre && !lastHIDEvent);
     
-    if (topreProductName && mayToPre) {
-        static int specialKeyCodes[] = { 3, 2, 18, 16, 17, 7, 1, 0, -1};
-        static int fnKeyCodes[] = { KG_KEY_F1, KG_KEY_F2, KG_KEY_F7, KG_KEY_F8, KG_KEY_F9, KG_KEY_F10, KG_KEY_F11, KG_KEY_F12, -1};
-        static NSString* hidIDs[] = { FF_F1_KEYID, FF_F2_KEYID, FF_F7_KEYID, FF_F8_KEYID, FF_F9_KEYID, FF_F10_KEYID, FF_F11_KEYID, FF_F12_KEYID};
+    static int specialKeyCodes[] = { 3, 2, 18, 16, 17, 7, 1, 0, -1};
+    static int fnKeyCodes[] = { KG_KEY_F1, KG_KEY_F2, KG_KEY_F7, KG_KEY_F8, KG_KEY_F9, KG_KEY_F10, KG_KEY_F11, KG_KEY_F12, -1};
+    static NSString* hidIDs[] = { FF_F1_KEYID, FF_F2_KEYID, FF_F7_KEYID, FF_F8_KEYID, FF_F9_KEYID, FF_F10_KEYID, FF_F11_KEYID, FF_F12_KEYID};
 
+    if (topreProductName && mayToPre) {
         if (e.type == NSEventTypeSystemDefined && e.subtype == NSEventSubtypeScreenChanged) {
             // special key to fn key
             int keyCode, keyFlags, keyState, keyRepeat;
@@ -74,7 +74,10 @@ myCGEventCallback(CGEventTapProxy proxy, CGEventType type,
             keyFlags = ([e data1] & 0x0000FFFF);
             keyState = (((keyFlags & 0xFF00) >> 8)) == 0xA; // true => keyDown
             keyRepeat = (keyFlags & 0x1);
-            
+
+            if (lastHIDEvent && (FF_KEY_UP == keyState))
+                [hidEventQueue removeLastObject];
+
             for (int i = 0; specialKeyCodes[i] >= 0; ++i) {
                 if (specialKeyCodes[i] == keyCode) {
                     //NSLog(@"%@", [NSString stringWithFormat:@"flipped.%@.%@", topreProductName, hidIDs[i]]);
@@ -87,7 +90,36 @@ myCGEventCallback(CGEventTapProxy proxy, CGEventType type,
                         CFRelease(sourceRef);
                         return newEvent;
                     }
-                    break;;
+                    break;
+                }
+            }
+        } else if ([e type] == NSKeyDown || [e type] == NSKeyUp) {
+            if([e type] == NSKeyUp) { // since we can get several keyDown key events per HID event, only remove the object on keyUp
+                if (lastHIDEvent)
+                    [hidEventQueue removeLastObject];
+            }
+
+            for (int i = 0; specialKeyCodes[i] >= 0; ++i) {
+                if (fnKeyCodes[i] == e.keyCode) {
+                    if([[[FFPreferenceManager sharedInstance] valueForKey:[NSString stringWithFormat:@"flipped.%@.%@", topreProductName, hidIDs[i]]] boolValue]) {
+                        int specialCode = specialKeyCodes[i];
+                    
+                        // create a new event, with the new key, but everything else (now including modifiers) the same
+                        NSEvent *newE = [NSEvent otherEventWithType:NSSystemDefined
+                                                           location:[e locationInWindow]
+                                                      modifierFlags:([e modifierFlags] | ([e type] == NSKeyDown ? 0xa00 : 0xb00))
+                                                          timestamp:[e timestamp]
+                                                       windowNumber:[e windowNumber]
+                                                            context:[e context]
+                                                            subtype:8
+                                                              data1:(specialCode << 16) + (([e type] == NSKeyDown  ? 0x0a : 0x0b) << 8) + ([e isARepeat] ? 1 : 0)
+                                                              data2:-1];
+
+                        CGEventRef newEvent = [newE CGEvent];
+                        CFRetain(newEvent); // newEvent gets released by the event system
+                        return newEvent;
+                    }
+                    break;
                 }
             }
         }
@@ -257,7 +289,7 @@ extern CFStringRef kAXTrustedCheckOptionPrompt __attribute__((weak_import));
 	// Preference pane sends this notification to tell us to die
 	[[NSDistributedNotificationCenter defaultCenter] addObserver:self selector:@selector(terminate) name:FF_TERMINATE_NOTIFICATION object:nil];
 	
-    
+#if 0
     for(DDHidKeyboard *keyboard in [DDHidKeyboard allKeyboards]) {
         // it's a comma-separated string of hex values: <first fkey code>,<first special code>,<second fkey code>,etc...
         CFStringRef fnusagemap = IORegistryEntrySearchCFProperty([keyboard ioDevice], kIOServicePlane, (CFStringRef)@"FnFunctionUsageMap", kCFAllocatorDefault, kIORegistryIterateRecursively);
@@ -265,7 +297,7 @@ extern CFStringRef kAXTrustedCheckOptionPrompt __attribute__((weak_import));
             NSLog(@"fnusagemap=%@", (__bridge NSString*)fnusagemap);
         }
     }
-
+#endif
 	[self listenForHIDEvents];
 	[self listenForKeyEvents];
 
